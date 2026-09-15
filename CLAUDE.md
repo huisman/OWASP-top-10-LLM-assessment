@@ -138,7 +138,7 @@ pip install anthropic python-docx pypdf flask pydantic rich
 - Python: PEP 8, type hints, `pathlib` over `os.path`
 - All content in English (plans, docs, prompts, commit messages)
 - Credentials from environment variables only, never hardcoded
-- Agent outputs should conform to `outputs/schemas/finding-schema.json`: required fields `id` (`F-\d{2,4}`), `title`, `risk_rating` (High/Medium/Low/Informational), `observation`, `recommendation`
+- Agent outputs should conform to `outputs/schemas/finding-schema.json`: required fields `id` (e.g. `F-LLM01`), `title`, `risk_rating` (High/Medium/Low/Informational), `observation`, `recommendation`
 
 ## Model used
 

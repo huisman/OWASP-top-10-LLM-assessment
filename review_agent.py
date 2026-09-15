@@ -70,7 +70,7 @@ def _build_system_prompt(defs: dict) -> str:
         "For each category that is relevant to the submitted code, output:",
         "",
         "**LLMxx – <Category Name>**",
-        "- Status: PASS | FAIL | PARTIAL | N/A",
+        "- Status: PASS | FAIL | WARN | N/A",
         '- Evidence: quote the exact line(s) of code or config value(s) that determined this status in a fenced code block; write "none visible" if status is N/A',
         "- Findings: explain what the evidence shows and why it is a risk (or why it is safe)",
         "- Recommendation: concrete remediation step (skip if status is PASS or N/A)",
