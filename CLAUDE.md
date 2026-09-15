@@ -10,19 +10,37 @@ This repo is the **OWASP Top 10 LLM Assessment** project — part of the [SAAF P
 
 1. **Agent Reviewer CLI + Web Portal** (`agent-reviewer/`) — the primary tool. Reviews agent source code and configs against OWASP LLM Top 10. Available as CLI (`review_agent.py`) and Flask web portal (`app.py`). Includes `owasp_llm_top10.json` definitions with auto-update support.
 
-2. **LLM OWASP Audit Pipeline** (`llm-owasp/`) — full pipeline package with parallel Claude API calls, per-control scoring (PASS/WARN/FAIL), Markdown reports, and a machine-readable SAAF finding schema. Entry point: `cli.py`.
+2. **LLM OWASP Audit Pipeline** (`llm-owasp/`) — full pipeline package with parallel LLM API calls, per-control scoring (PASS/WARN/FAIL), Markdown reports, and a machine-readable SAAF finding schema. Entry point: `cli.py`.
 
 3. **Root-level Reviewer** (`review_agent.py` + `app.py`) — earlier standalone version of the OWASP reviewer, still functional.
 
 4. **Audit Document Reviewer** (`review_document.py`) — reviews internal audit documents (control descriptions, process docs, policies) for findings, gaps, risks, and recommendations.
 
-5. **SAAF Compliance Agent** (`core/`, `prompts/`, `knowledge/`, `output/`) — structured compliance report generator. Maps applicable frameworks/regulations from a company profile, then calls Claude to produce a validated Pydantic `ComplianceReport` as JSON.
+5. **SAAF Compliance Agent** (`core/`, `prompts/`, `knowledge/`, `output/`) — structured compliance report generator. Maps applicable frameworks/regulations from a company profile, then calls the configured LLM to produce a validated Pydantic `ComplianceReport` as JSON.
 
 6. **Prototype** (`prototype/`) — earlier Flask/Jinja2 prototype of the agent reviewer (March 2026). Contains `test_agent.py`, an intentionally insecure sample agent for testing.
 
+## Model and provider configuration
+
+All tools call the LLM through the shared `llm_provider.py` module (`config.py` for the SAAF Compliance Agent) instead of talking to a vendor SDK directly, so no tool is locked to a single AI provider or model. Configure via environment variables:
+
+```
+SAAF_LLM_PROVIDER    "anthropic" (default) or "openai"
+SAAF_LLM_MODEL        Model id. Defaults: "claude-opus-4-6" (anthropic), "gpt-5" (openai)
+SAAF_LLM_API_KEY      Optional; overrides the provider-native key env var below
+ANTHROPIC_API_KEY      Used when provider=anthropic and SAAF_LLM_API_KEY unset
+OPENAI_API_KEY         Used when provider=openai and SAAF_LLM_API_KEY unset
+SAAF_LLM_BASE_URL     Optional custom endpoint — Azure OpenAI, a local Ollama/vLLM
+                       server, or any other OpenAI-compatible API
+SAAF_LLM_REASONING    "1" (default) or "0" — request extended thinking/reasoning
+                       where the provider and model support it
+```
+
+`SAAF_LLM_PROVIDER=openai` also covers any OpenAI-compatible endpoint (Azure OpenAI, Ollama, vLLM, other hosted providers) via `SAAF_LLM_BASE_URL`.
+
 ## How to run
 
-Set the API key first:
+Set the API key for your chosen provider first (defaults to Anthropic if unset):
 ```
 set ANTHROPIC_API_KEY=sk-ant-...your-key...
 ```
@@ -64,8 +82,10 @@ python review_document.py                          # paste text (Ctrl+Z then Ent
 ## Dependencies
 
 ```
-pip install anthropic python-docx pypdf flask pydantic rich
+pip install anthropic openai python-docx pypdf flask pydantic rich
 ```
+
+Only the SDK for your configured `SAAF_LLM_PROVIDER` is actually imported at runtime (see `llm_provider.py`), but both are listed here since the provider is a runtime choice, not an install-time one.
 
 `llm-owasp/` has its own `requirements.txt`.
 
@@ -91,6 +111,8 @@ pip install anthropic python-docx pypdf flask pydantic rich
 ├── app.py                       # Root-level Flask portal (earlier version)
 ├── review_document.py           # Audit document reviewer (.txt, .docx, .pdf)
 ├── owasp_llm_top10.json         # OWASP definitions for root-level reviewer
+├── llm_provider.py              # Shared provider-agnostic LLM client (Anthropic/OpenAI)
+├── config.py                    # Runtime config (provider/model/key) for the Compliance Agent
 │
 ├── core/                        # SAAF Compliance Agent — agent logic + models
 ├── prompts/                     # SAAF Compliance Agent — prompt builders
@@ -112,14 +134,16 @@ pip install anthropic python-docx pypdf flask pydantic rich
 
 ## Architecture
 
-**`agent-reviewer/review_agent.py`** — self-contained CLI. Supports `.py`, `.js`, `.ts`, `.json`, `.yaml`, `.yml`, `.txt`, `.md`. Two-call pattern: streaming `review_agent()` produces OWASP per-category findings using `thinking: {"type": "adaptive"}`, then `assess_risk()` extracts Critical/High/Medium/Low. In folder mode, writes `<filename>_owasp_review.txt` and `owasp_priority_report.txt` into `<folder>/reports/`. Exports `SYSTEM_PROMPT` and `SUPPORTED_EXTENSIONS` for `app.py`. Reads definitions from `owasp_llm_top10.json`; `--update-owasp` fetches a fresh copy from the configured URL.
+**`llm_provider.py`** — shared provider-agnostic LLM client used by every tool below. `LLMClient` wraps either the Anthropic or OpenAI SDK (selected via `SAAF_LLM_PROVIDER`), exposing `complete()`, `stream()` (yields `StreamEvent("text"|"thinking", ...)`), and `complete_with_retry()` for parallel/batch callers. Raises `ProviderError` subclasses (`ProviderRateLimitError`, `ProviderAPIError`, `ProviderConnectionError`) instead of vendor-specific exceptions.
 
-**`agent-reviewer/app.py`** — Flask web portal. Imports `SYSTEM_PROMPT` and `SUPPORTED_EXTENSIONS` from `review_agent`. Streams Claude's response directly to the browser via `stream_with_context`. All HTML/CSS/JS inlined. Port defaults to `5000`, overridable via `PORT` env var.
+**`agent-reviewer/review_agent.py`** — self-contained CLI. Supports `.py`, `.js`, `.ts`, `.json`, `.yaml`, `.yml`, `.txt`, `.md`. Two-call pattern: streaming `review_agent()` produces OWASP per-category findings via `LLMClient.stream()` (extended thinking requested when the provider supports it), then `assess_risk()` extracts Critical/High/Medium/Low. In folder mode, writes `<filename>_owasp_review.txt` and `owasp_priority_report.txt` into `<folder>/reports/`. Exports `SYSTEM_PROMPT` and `SUPPORTED_EXTENSIONS` for `app.py`. Reads definitions from `owasp_llm_top10.json`; `--update-owasp` fetches a fresh copy from the configured URL. Imports `llm_provider.py` from the repo root via a `sys.path` bootstrap.
+
+**`agent-reviewer/app.py`** — Flask web portal. Imports `SYSTEM_PROMPT` and `SUPPORTED_EXTENSIONS` from `review_agent`. Streams the model's response directly to the browser via `stream_with_context`. All HTML/CSS/JS inlined. Port defaults to `5000`, overridable via `PORT` env var.
 
 **`llm-owasp/`** — pipeline package:
 - `owasp_llm_audit/collector.py` — collects and normalises audit material from files/dirs
 - `owasp_llm_audit/controls.py` — loads LLM01–LLM10 definitions from `docs/`
-- `owasp_llm_audit/auditor.py` — calls Claude API in parallel with retry/backoff
+- `owasp_llm_audit/auditor.py` — calls the configured LLM in parallel via `LLMClient.complete_with_retry()`
 - `owasp_llm_audit/report.py` — renders Markdown scorecard + SAAF finding schema JSON
 - `cli.py` — entry point; supports `--filter`, `--output`, `--control`, `--strict`, `--dry-run`
 
@@ -128,10 +152,10 @@ pip install anthropic python-docx pypdf flask pydantic rich
 **SAAF Compliance Agent** (`core/`, `prompts/`, `knowledge/`, `output/`):
 1. `FrameworkMapper` (`core/mapper.py`) — pure-Python, no API call. Resolves jurisdiction, walks `FRAMEWORK_REGISTRY` and `REGULATORY_MATRIX` to determine applicable frameworks (capped at 8) and mandatory regulations.
 2. `build_system_prompt` / `build_user_message` (`prompts/system_prompt.py`) — assembles prompts dynamically; injects only relevant framework knowledge.
-3. `ComplianceAgent.run()` (`core/agent.py`) — calls Claude with streaming + `thinking: {"type": "adaptive"}`, retries once on 5xx, validates against `ComplianceReport` Pydantic schema (`core/models.py`).
+3. `ComplianceAgent.run()` (`core/agent.py`) — calls the configured LLM via `llm_provider.LLMClient.stream()` with extended thinking requested where supported, retries once on 5xx, validates against `ComplianceReport` Pydantic schema (`core/models.py`).
 4. `output/formatter.py` — Rich-based CLI renderer for the final report.
 
-`ComplianceAgent` reads settings from a `Config` class (expected at `config.py` in root — **not yet committed**).
+`ComplianceAgent` reads settings from the `Config` class in `config.py` (root) — provider, model, API key, base URL, max tokens, and max retries, all environment-driven.
 
 ## Coding conventions
 
@@ -142,4 +166,4 @@ pip install anthropic python-docx pypdf flask pydantic rich
 
 ## Model used
 
-`claude-opus-4-6` for all API calls across all tools.
+Configurable per deployment via `SAAF_LLM_PROVIDER` / `SAAF_LLM_MODEL` (see "Model and provider configuration" above). Defaults to `claude-opus-4-6` on Anthropic when unset, for backward compatibility with existing deployments.

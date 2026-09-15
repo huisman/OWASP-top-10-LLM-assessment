@@ -1,12 +1,12 @@
 # OWASP LLM Top 10 Audit Pipeline
 
-Assesses any AI agent codebase, plan, or configuration against all 10 OWASP LLM controls (LLM01–LLM10, 2025 edition) via the Claude API.
+Assesses any AI agent codebase, plan, or configuration against all 10 OWASP LLM controls (LLM01–LLM10, 2025 edition), via any supported LLM provider.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY with SAAF_LLM_PROVIDER=openai
 
 # Scan a single file
 python cli.py path/to/agent.py
@@ -53,7 +53,7 @@ python -m pytest tests/ -v
 owasp_llm_audit/
   collector.py   — collects & normalises audit material from files/dirs
   controls.py    — loads LLM01–LLM10 control definitions from docs/
-  auditor.py     — calls Claude API (parallel, with retry/backoff)
+  auditor.py     — calls the configured LLM via llm_provider.py (parallel, with retry/backoff)
   report.py      — renders Markdown scorecard + SAAF finding schema JSON
   docs/          — OWASP LLM control definition files (LLM01.md … LLM10.md)
 cli.py           — CLI entry point

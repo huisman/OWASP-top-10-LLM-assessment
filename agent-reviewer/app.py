@@ -4,18 +4,21 @@ Run:  python app.py
 Open: http://localhost:5000
 """
 
-import anthropic
 import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, request, Response, stream_with_context, render_template_string
 
+# llm_provider.py is shared from the repo root
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from llm_provider import LLMClient, ProviderError
 from review_agent import (
     SYSTEM_PROMPT, SUPPORTED_EXTENSIONS, MODEL, PROMPT_HASH,
     OWASP_VERSION, OWASP_LAST_UPDATED, OWASP_EDITION,
@@ -513,7 +516,7 @@ HTML = """<!DOCTYPE html>
       <li><strong>From a repo:</strong> paste a GitHub URL and click <strong>Fetch</strong> — all supported files are loaded automatically.</li>
       <li><strong>From code:</strong> each <strong>agent card</strong> represents one component. Add cards with <strong>+ Add agent</strong>, then paste code or click <strong>Upload</strong> / drag a file.</li>
       <li>Click <strong>Review Agent</strong> (single) or <strong>Review System</strong> (multi) — or press <kbd>Ctrl+Enter</kbd>.</li>
-      <li>If Claude uses extended thinking, the <strong>Extended thinking</strong> panel appears — click to inspect the reasoning.</li>
+      <li>If the model uses extended thinking, the <strong>Extended thinking</strong> panel appears — click to inspect the reasoning.</li>
       <li>The <strong>audit bar</strong> shows timestamp, model, and SHA-256 hashes for reperformance verification.</li>
       <li>Use <strong>Copy</strong> or <strong>Download</strong> to save the report. The <code>.md</code> includes the full audit header and any extended thinking.</li>
     </ul>
@@ -528,7 +531,7 @@ HTML = """<!DOCTYPE html>
     <p><code>.py</code> · <code>.js</code> · <code>.ts</code> · <code>.json</code> · <code>.yaml</code> · <code>.yml</code> · <code>.txt</code> · <code>.md</code></p>
 
     <h3>Running locally</h3>
-    <p>Requires <code>ANTHROPIC_API_KEY</code> set in the environment and <code>pip install anthropic flask</code>. Start with <code>python app.py</code>; port defaults to <code>5000</code>.</p>
+    <p>Requires an API key for your configured provider (<code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code> — see <code>SAAF_LLM_PROVIDER</code>) and <code>pip install anthropic openai flask</code>. Start with <code>python app.py</code>; port defaults to <code>5000</code>.</p>
 
     <button class="close-btn" onclick="document.getElementById('readme-modal').classList.remove('open')">Close</button>
   </div>
@@ -875,7 +878,7 @@ HTML = """<!DOCTYPE html>
 
     if (rawThinking) {
       content += "## Extended Thinking\\n\\n";
-      content += "> Claude's reasoning chain, preserved for audit/reperformance purposes.\\n\\n";
+      content += "> Model's reasoning chain, preserved for audit/reperformance purposes.\\n\\n";
       content += "```\\n" + rawThinking + "\\n```\\n\\n---\\n\\n";
     }
 
@@ -1037,9 +1040,10 @@ def review():
     if not agents:
         return "No code provided.", 400
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return "ANTHROPIC_API_KEY environment variable is not set.", 500
+    try:
+        llm_client = LLMClient()
+    except ProviderError as e:
+        return str(e), 500
 
     def generate():
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1076,24 +1080,14 @@ def review():
                 )
             user_message = "\n".join(parts)
 
-        client    = anthropic.Anthropic(api_key=api_key)
         full_text = []
 
-        with client.messages.stream(
-            model=MODEL,
-            max_tokens=8192,
-            thinking={"type": "adaptive"},
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        ) as stream:
-            for event in stream:
-                if event.type == "content_block_delta":
-                    delta = event.delta
-                    if getattr(delta, "type", None) == "thinking_delta":
-                        yield json.dumps({"type": "thinking", "text": delta.thinking}) + "\n"
-                    elif getattr(delta, "type", None) == "text_delta":
-                        full_text.append(delta.text)
-                        yield json.dumps({"type": "text", "text": delta.text}) + "\n"
+        for event in llm_client.stream(system=SYSTEM_PROMPT, user=user_message, max_tokens=8192):
+            if event.type == "thinking":
+                yield json.dumps({"type": "thinking", "text": event.text}) + "\n"
+            elif event.type == "text":
+                full_text.append(event.text)
+                yield json.dumps({"type": "text", "text": event.text}) + "\n"
 
         review_text = "".join(full_text)
         risk_match  = re.search(r"[Oo]verall risk rating[:\s]+(Critical|High|Medium|Low)", review_text)

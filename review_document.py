@@ -8,12 +8,13 @@ Usage:
   python review_document.py --folder my_folder     <- review all documents in a folder
 """
 
-import anthropic
 import os
 import sys
 
 import docx
 import pypdf
+
+from llm_provider import LLMClient
 
 SUPPORTED_EXTENSIONS = (".txt", ".docx", ".pdf")
 
@@ -40,9 +41,9 @@ def read_file(file_path: str) -> str:
 
 
 def review_document(document_text: str) -> str:
-    """Send document to Claude and print a structured audit review."""
+    """Send document to the configured model and print a structured audit review."""
 
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    client = LLMClient()
 
     system_prompt = """You are an experienced internal auditor.
 When given a document, review it and provide a structured assessment with these sections:
@@ -58,47 +59,35 @@ Be specific and practical. Use bullet points within each section."""
     print("\n--- Reviewing document, please wait... ---\n")
 
     result = []
-    with client.messages.stream(
-        model="claude-opus-4-6",
-        max_tokens=2048,
+    for event in client.stream(
         system=system_prompt,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Please review the following document:\n\n{document_text}"
-            }
-        ]
-    ) as stream:
-        for text in stream.text_stream:
-            print(text, end="", flush=True)
-            result.append(text)
+        user=f"Please review the following document:\n\n{document_text}",
+        max_tokens=2048,
+    ):
+        if event.type == "text":
+            print(event.text, end="", flush=True)
+            result.append(event.text)
 
     print("\n\n--- Review complete ---\n")
     return "".join(result)
 
 
 def assess_risk(filename: str, review_text: str) -> dict:
-    """Ask Claude to decide the risk level of a reviewed document."""
+    """Ask the configured model to decide the risk level of a reviewed document."""
 
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    client = LLMClient()
 
-    response = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=256,
+    result = client.complete(
         system="""You are an internal audit risk assessor.
 Based on an audit review, assign a risk level and give one short reason.
 Respond in exactly this format:
 RISK: High | Medium | Low
 REASON: one sentence explaining why""",
-        messages=[
-            {
-                "role": "user",
-                "content": f"Document: {filename}\n\nReview:\n{review_text}"
-            }
-        ]
+        user=f"Document: {filename}\n\nReview:\n{review_text}",
+        max_tokens=256,
     )
 
-    output = response.content[0].text.strip()
+    output = result.text
     risk_level = "Unknown"
     reason = ""
 

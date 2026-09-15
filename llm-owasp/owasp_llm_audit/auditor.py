@@ -1,16 +1,19 @@
-"""Assess audit material against OWASP LLM controls via Claude API."""
+"""Assess audit material against OWASP LLM controls via a provider-agnostic LLM client."""
 from __future__ import annotations
 import json
-import random
-import time
-import anthropic
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from pathlib import Path
 
 # Fix 1: import using package-relative path so the module works from any cwd
 from .controls import Control
 
-MODEL = "claude-opus-4-6"
+# llm_provider.py is shared from the repo root
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from llm_provider import LLMClient, LLMConfig, ProviderRateLimitError
+
+MODEL = LLMConfig().model
 
 SYSTEM_PROMPT = """\
 You are an AI security auditor specialised in the OWASP Top 10 for LLM Applications (2025 edition).
@@ -67,7 +70,7 @@ class Assessment:
 
 
 # Fix 2: client created once and passed in; assess() is pure
-def _call(client: anthropic.Anthropic, material: str, control: Control) -> Assessment:
+def _call(client: LLMClient, material: str, control: Control) -> Assessment:
     user_message = f"""\
 Control: {control.id} - {control.name}
 
@@ -83,32 +86,22 @@ Audit material:
 
 Assess this agent against the control above. Return JSON only.
 """
-    response = None
-    for attempt in range(3):
-        try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=2048,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-            break
-        except anthropic.RateLimitError as exc:
-            if attempt == 2:
-                raise
-            try:
-                wait = int(exc.response.headers.get("retry-after", 0))
-            except Exception:
-                wait = 0
-            if not wait:
-                wait = (2 ** attempt) * 60 + random.uniform(0, 10)
-            print(f"\n      [{control.id}] Rate limit — waiting {wait:.0f}s...", end=" ", flush=True)
-            time.sleep(wait)
 
-    if response is None:
-        raise RuntimeError(f"No response from API after 3 attempts for {control.id}")
+    def _on_retry(attempt: int, wait: float) -> None:
+        print(f"\n      [{control.id}] Rate limit — waiting {wait:.0f}s...", end=" ", flush=True)
 
-    raw = response.content[0].text.strip()
+    try:
+        result = client.complete_with_retry(
+            system=SYSTEM_PROMPT,
+            user=user_message,
+            max_tokens=2048,
+            attempts=3,
+            on_retry=_on_retry,
+        )
+    except ProviderRateLimitError as exc:
+        raise RuntimeError(f"No response from API after 3 attempts for {control.id}") from exc
+
+    raw = result.text
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -129,7 +122,7 @@ Assess this agent against the control above. Return JSON only.
     )
 
 
-def assess(material: str, control: Control, client: anthropic.Anthropic) -> Assessment:
+def assess(material: str, control: Control, client: LLMClient) -> Assessment:
     """Assess a single control. Client must be provided by the caller."""
     return _call(client, material, control)
 
@@ -138,7 +131,7 @@ def assess(material: str, control: Control, client: anthropic.Anthropic) -> Asse
 def assess_all(
     material: str,
     controls: list[Control],
-    client: anthropic.Anthropic,
+    client: LLMClient,
     on_result=None,
     max_workers: int = 5,
 ) -> list[Assessment]:

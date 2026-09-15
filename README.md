@@ -45,8 +45,8 @@ Agent that assesses other agents for compliance with the OWASP Top 10 for LLM Ap
 
 ```bash
 cd agent-reviewer
-pip install anthropic flask
-export ANTHROPIC_API_KEY=sk-ant-...
+pip install anthropic openai flask
+export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY with SAAF_LLM_PROVIDER=openai
 
 python review_agent.py my_agent.py              # single file
 python review_agent.py --folder agents_folder   # all files in a folder
@@ -65,7 +65,7 @@ python app.py    # opens http://localhost:5000
 ```bash
 cd llm-owasp
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY with SAAF_LLM_PROVIDER=openai
 
 python cli.py path/to/agent.py                  # scan a single file
 python cli.py src/ --output reports/audit.md     # scan a directory
@@ -100,9 +100,9 @@ All 10 OWASP LLM controls (2025 edition):
 | LLM09 | Misinformation |
 | LLM10 | Unbounded Consumption |
 
-## Model
+## Model and provider
 
-All tools use the Anthropic Claude API (`claude-opus-4-6` for agent-reviewer, configurable for llm-owasp).
+All tools call the LLM through a shared, provider-agnostic client (`llm_provider.py`). Set `SAAF_LLM_PROVIDER=anthropic` (default) or `openai` — the latter also covers Azure OpenAI, Ollama, vLLM, and other OpenAI-compatible endpoints via `SAAF_LLM_BASE_URL` — and `SAAF_LLM_MODEL` to pick the model. Defaults to `claude-opus-4-6` on Anthropic when unset.
 
 ## Related repos
 

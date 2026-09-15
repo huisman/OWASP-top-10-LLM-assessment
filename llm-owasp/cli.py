@@ -20,8 +20,9 @@ import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import anthropic
+from llm_provider import LLMClient, ProviderError
 from owasp_llm_audit.collector import collect
 from owasp_llm_audit.controls import load_controls, CONTROL_IDS
 from owasp_llm_audit.auditor import Assessment, assess, assess_all
@@ -81,9 +82,12 @@ def main() -> None:
                         help="Skip API calls and generate a synthetic report")
     args = parser.parse_args()
 
-    if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ERROR: ANTHROPIC_API_KEY is not set.", file=sys.stderr)
-        sys.exit(1)
+    if not args.dry_run:
+        try:
+            client = LLMClient()
+        except ProviderError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
 
     label = ", ".join(args.target) + (f" [filter={args.filter}]" if args.filter else "")
 
@@ -100,7 +104,6 @@ def main() -> None:
     if args.dry_run:
         assessments = [_dry_run_assessment(c.id, c.name) for c in controls]
     else:
-        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         if args.control:
             # Single control — no need for thread pool
             a = assess(material, controls[0], client)

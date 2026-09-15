@@ -1,12 +1,14 @@
 """Tests for owasp_llm_audit.auditor (no real API calls)."""
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from owasp_llm_audit.auditor import Assessment, _call, assess_all
 from owasp_llm_audit.controls import Control
+from llm_provider import LLMResult, ProviderRateLimitError
 
 CTRL = Control(id="LLM01", name="Prompt Injection", description="Test control")
 MATERIAL = "def foo(): pass"
@@ -19,10 +21,8 @@ def _mock_client(verdict="PASS", findings=None, remediation=None):
         "findings": findings or [],
         "remediation": remediation or [],
     })
-    msg = MagicMock()
-    msg.content = [MagicMock(text=payload)]
     client = MagicMock()
-    client.messages.create.return_value = msg
+    client.complete_with_retry.return_value = LLMResult(text=payload)
     return client
 
 
@@ -43,39 +43,26 @@ def test_call_fail_verdict():
 
 
 def test_call_handles_markdown_fenced_json():
-    import json
-    from unittest.mock import MagicMock
     payload = '```json\n{"verdict": "WARN", "findings": [], "remediation": []}\n```'
-    msg = MagicMock()
-    msg.content = [MagicMock(text=payload)]
     client = MagicMock()
-    client.messages.create.return_value = msg
+    client.complete_with_retry.return_value = LLMResult(text=payload)
     result = _call(client, MATERIAL, CTRL)
     assert result.verdict == "WARN"
 
 
 def test_call_handles_truncated_json():
-    msg = MagicMock()
-    msg.content = [MagicMock(text='{"verdict": "FAIL", "findings": ["truncated')]
     client = MagicMock()
-    client.messages.create.return_value = msg
+    client.complete_with_retry.return_value = LLMResult(text='{"verdict": "FAIL", "findings": ["truncated')
     result = _call(client, MATERIAL, CTRL)
     assert result.verdict == "WARN"
     assert "truncated" in result.findings[0].lower()
 
 
-def test_call_retries_on_rate_limit():
-    import anthropic
+def test_call_raises_after_rate_limit_exhausted():
     client = MagicMock()
-    good_msg = MagicMock()
-    good_msg.content = [MagicMock(text='{"verdict": "PASS", "findings": [], "remediation": []}')]
-    rate_err = anthropic.RateLimitError.__new__(anthropic.RateLimitError)
-    rate_err.response = MagicMock()
-    rate_err.response.headers = {"retry-after": "1"}
-    client.messages.create.side_effect = [rate_err, good_msg]
-    result = _call(client, MATERIAL, CTRL)
-    assert result.verdict == "PASS"
-    assert client.messages.create.call_count == 2
+    client.complete_with_retry.side_effect = ProviderRateLimitError("rate limited")
+    with pytest.raises(RuntimeError):
+        _call(client, MATERIAL, CTRL)
 
 
 def test_assess_all_returns_in_control_order():

@@ -12,7 +12,6 @@ Usage:
   python review_agent.py --update-owasp <url>                    <- update from a specific URL
 """
 
-import anthropic
 import hashlib
 import json
 import os
@@ -21,8 +20,10 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+from llm_provider import LLMClient, LLMConfig
+
 SUPPORTED_EXTENSIONS = (".py", ".js", ".ts", ".json", ".yaml", ".yml", ".txt", ".md")
-MODEL = "claude-opus-4-6"
+MODEL = LLMConfig().model
 
 OWASP_DEFS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "owasp_llm_top10.json")
 # Override this URL to point at your own hosted copy of owasp_llm_top10.json
@@ -209,42 +210,25 @@ def read_file(file_path: str) -> str:
 
 def _stream_review(user_message: str, show_thinking: bool = False) -> dict:
     """Stream a review request. Returns {"review": str, "thinking": str}."""
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    client = LLMClient()
     result = []
     thinking_parts = []
     in_thinking = False
 
-    with client.messages.stream(
-        model=MODEL,
-        max_tokens=8192,
-        thinking={"type": "adaptive"},
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        for event in stream:
-            if event.type == "content_block_start":
-                block_type = getattr(event.content_block, "type", None)
-                if block_type == "thinking":
-                    in_thinking = True
-                    if show_thinking:
-                        print("\033[2m\n[THINKING ────────────────────────────────]\033[0m", flush=True)
-                elif block_type == "text":
-                    in_thinking = False
-
-            elif event.type == "content_block_delta":
-                delta = event.delta
-                if getattr(delta, "type", None) == "thinking_delta":
-                    thinking_parts.append(delta.thinking)
-                    if show_thinking:
-                        print(f"\033[2m{delta.thinking}\033[0m", end="", flush=True)
-                elif getattr(delta, "type", None) == "text_delta":
-                    print(delta.text, end="", flush=True)
-                    result.append(delta.text)
-
-            elif event.type == "content_block_stop":
-                if in_thinking and show_thinking:
-                    print("\033[2m\n[──────────────────────── END THINKING]\033[0m\n", flush=True)
-                    in_thinking = False
+    for event in client.stream(system=SYSTEM_PROMPT, user=user_message, max_tokens=8192):
+        if event.type == "thinking":
+            if not in_thinking and show_thinking:
+                in_thinking = True
+                print("\033[2m\n[THINKING ────────────────────────────────]\033[0m", flush=True)
+            thinking_parts.append(event.text)
+            if show_thinking:
+                print(f"\033[2m{event.text}\033[0m", end="", flush=True)
+        elif event.type == "text":
+            if in_thinking and show_thinking:
+                print("\033[2m\n[──────────────────────── END THINKING]\033[0m\n", flush=True)
+            in_thinking = False
+            print(event.text, end="", flush=True)
+            result.append(event.text)
 
     return {"review": "".join(result), "thinking": "".join(thinking_parts)}
 
@@ -288,26 +272,20 @@ def review_multi_agent(agents: list, show_thinking: bool = False) -> dict:
 
 
 def assess_risk(filename: str, review_text: str) -> dict:
-    """Ask Claude to extract the overall risk rating from a completed review."""
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    """Ask the configured model to extract the overall risk rating from a completed review."""
+    client = LLMClient()
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=256,
+    result = client.complete(
         system="""You are an LLM security risk classifier.
 Given an OWASP LLM Top 10 review, extract the overall risk rating and one concise reason.
 Respond in exactly this format:
 RISK: Critical | High | Medium | Low
 REASON: one sentence""",
-        messages=[
-            {
-                "role": "user",
-                "content": f"File: {filename}\n\nReview:\n{review_text}",
-            }
-        ],
+        user=f"File: {filename}\n\nReview:\n{review_text}",
+        max_tokens=256,
     )
 
-    output = response.content[0].text.strip()
+    output = result.text
     risk_level = "Unknown"
     reason = ""
 
@@ -327,7 +305,7 @@ def _write_report_file(path: str, agents: list, review: str, thinking: str) -> N
         if thinking:
             f.write("─" * _W + "\n")
             f.write("EXTENDED THINKING\n")
-            f.write("[Claude's reasoning chain, preserved for audit/reperformance purposes]\n")
+            f.write("[Model's reasoning chain, preserved for audit/reperformance purposes]\n")
             f.write("─" * _W + "\n\n")
             f.write(thinking)
             f.write("\n\n" + "─" * _W + "\n\n")
